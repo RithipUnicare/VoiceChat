@@ -18,7 +18,8 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Sound from 'react-native-nitro-sound';
 import RNFS from 'react-native-fs';
-import { useVoice, VoiceMode } from 'react-native-voicekit';
+//@ts-ignore
+import { initWhisper } from 'whisper.rn';
 import { RootStackParamList } from '../../types/types';
 import { voiceNoteService } from '../../services/voiceNoteService';
 
@@ -32,19 +33,7 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
   // Note: Sound from react-native-nitro-sound is a singleton instance
   // We use it directly without creating instances
   const tempRecordingPath = useRef<string>('');
-
-  // Voice recognition hook
-  const {
-    available: voiceAvailable,
-    listening,
-    transcript: voiceTranscript,
-    startListening,
-    stopListening,
-  } = useVoice({
-    locale: 'en-US',
-    mode: VoiceMode.Continuous,
-    enablePartialResults: true,
-  });
+  const whisperContext = useRef<any>(null);
 
   const [recordingUri, setRecordingUri] = useState<string>('');
   const [duration, setDuration] = useState(0);
@@ -53,19 +42,33 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
   const [uploading, setUploading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [durationInterval, setDurationInterval] = useState<number | null>(null);
 
-  // Update transcript from voice recognition
+  // Initialize Whisper on mount
   useEffect(() => {
-    console.log('Voice transcript updated:', voiceTranscript);
-    if (voiceTranscript) {
-      setTranscript(voiceTranscript);
-    }
-  }, [voiceTranscript]);
+    const initializeWhisper = async () => {
+      try {
+        whisperContext.current = await initWhisper({
+          filePath: require('../../assets/ggml-tiny.en.bin'),
+        });
+        console.log('Whisper initialized successfully');
+      } catch (error) {
+        console.error('Failed to initialize Whisper:', error);
+        Alert.alert(
+          'Whisper Initialization Failed',
+          'Transcription will not be available. Please ensure the model file is downloaded.',
+        );
+      }
+    };
 
-  useEffect(() => {
+    initializeWhisper();
+
     return () => {
       cleanupAudio();
+      if (whisperContext.current) {
+        whisperContext.current.release();
+      }
     };
   }, []);
 
@@ -142,14 +145,13 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
       Sound.removeRecordBackListener();
       setIsRecording(false);
 
-      // Note: Voice recognition disabled - it conflicts with audio recording
-      // Both can't use the microphone at the same time
-      // Users can manually type the transcript after recording
-
       // Set the recording URI from either the returned URI or the temp path
       const finalUri = uri || tempRecordingPath.current;
       if (finalUri) {
         setRecordingUri(finalUri);
+
+        // Automatically transcribe the recorded audio
+        await transcribeAudio(finalUri);
       }
 
       // Clear temp path
@@ -158,6 +160,36 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
       console.error('Failed to stop recording:', error);
       Alert.alert('Error', 'Failed to stop recording.');
       setIsRecording(false);
+    }
+  };
+
+  const transcribeAudio = async (audioPath: string) => {
+    if (!whisperContext.current) {
+      console.error('Whisper context not initialized');
+      return;
+    }
+
+    try {
+      setIsTranscribing(true);
+      console.log('Starting transcription for:', audioPath);
+
+      const { promise } = whisperContext.current.transcribe(
+        audioPath.startsWith('file://') ? audioPath : `file://${audioPath}`,
+        { language: 'en' },
+      );
+
+      const { result } = await promise;
+      console.log('Transcription result:', result);
+
+      setTranscript(result || '');
+      setIsTranscribing(false);
+    } catch (error) {
+      console.error('Transcription failed:', error);
+      Alert.alert(
+        'Transcription Error',
+        'Failed to transcribe audio. You can manually enter the transcript.',
+      );
+      setIsTranscribing(false);
     }
   };
 
@@ -302,6 +334,12 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
                 Duration: {formatTime(duration)}
               </Text>
 
+              {isTranscribing && (
+                <Text variant="bodySmall" style={styles.transcribingText}>
+                  🎙️ Transcribing audio...
+                </Text>
+              )}
+
               <View style={styles.playbackControls}>
                 <IconButton
                   icon={isPlaying ? 'pause' : 'play'}
@@ -429,6 +467,12 @@ const styles = StyleSheet.create({
   },
   fabRecording: {
     backgroundColor: '#f44336',
+  },
+  transcribingText: {
+    textAlign: 'center',
+    marginVertical: 8,
+    color: '#6200ee',
+    fontStyle: 'italic',
   },
 });
 
