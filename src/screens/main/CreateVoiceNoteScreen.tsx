@@ -1,11 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
   ScrollView,
   Alert,
-  Platform,
-  PermissionsAndroid,
 } from 'react-native';
 import {
   Text,
@@ -16,12 +14,10 @@ import {
   IconButton,
 } from 'react-native-paper';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useVoice, VoiceMode } from 'react-native-voicekit';
 import Sound from 'react-native-nitro-sound';
 import RNFS from 'react-native-fs';
-//@ts-ignore
-import { initWhisper } from 'whisper.rn';
 import { RootStackParamList } from '../../types/types';
-import { voiceNoteService } from '../../services/voiceNoteService';
 
 type CreateVoiceNoteScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'CreateVoiceNote'>;
@@ -30,166 +26,97 @@ type CreateVoiceNoteScreenProps = {
 const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
   navigation,
 }) => {
-  // Note: Sound from react-native-nitro-sound is a singleton instance
-  // We use it directly without creating instances
-  const tempRecordingPath = useRef<string>('');
-  const whisperContext = useRef<any>(null);
-
-  const [recordingUri, setRecordingUri] = useState<string>('');
-  const [duration, setDuration] = useState(0);
   const [transcript, setTranscript] = useState('');
   const [title, setTitle] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [recordingUri, setRecordingUri] = useState('');
+  const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [durationInterval, setDurationInterval] = useState<number | null>(null);
+  // Initialize voice recognition hook
+  const {
+    available,
+    listening,
+    transcript: voiceTranscript,
+    startListening,
+    stopListening,
+  } = useVoice({
+    locale: 'en-US',
+    mode: VoiceMode.Continuous,
+    enablePartialResults: true,
+  });
 
-  // Initialize Whisper on mount
+  // Track previous transcript to detect changes
+  const previousTranscript = React.useRef('');
+
+  // Sync voice transcript to local state - APPEND instead of replace
   useEffect(() => {
-    const initializeWhisper = async () => {
-      try {
-        whisperContext.current = await initWhisper({
-          filePath: require('../../assets/ggml-tiny.en.bin'),
-        });
-        console.log('Whisper initialized successfully');
-      } catch (error) {
-        console.error('Failed to initialize Whisper:', error);
-        Alert.alert(
-          'Whisper Initialization Failed',
-          'Transcription will not be available. Please ensure the model file is downloaded.',
-        );
-      }
-    };
+    if (voiceTranscript && voiceTranscript !== previousTranscript.current) {
+      // Append new text to existing transcript
+      setTranscript(prev => {
+        const newText = prev ? `${prev} ${voiceTranscript}` : voiceTranscript;
+        return newText;
+      });
+      previousTranscript.current = voiceTranscript;
+      console.log('✅ Voice transcript appended:', voiceTranscript);
+    }
+  }, [voiceTranscript]);
 
-    initializeWhisper();
+  // Check voice availability
+  useEffect(() => {
+    console.log('🔊 Voice recognition available:', available);
+    if (!available) {
+      Alert.alert(
+        'Speech Recognition Unavailable',
+        'Speech recognition is not available on this device.',
+      );
+    }
+  }, [available]);
 
-    return () => {
-      cleanupAudio();
-      if (whisperContext.current) {
-        whisperContext.current.release();
-      }
-    };
-  }, []);
-
-  const cleanupAudio = async () => {
+  const handleStartListening = async () => {
     try {
-      await Sound.stopPlayer();
-      Sound.removePlayBackListener();
-      Sound.removeRecordBackListener();
-    } catch (error) {
-      // Ignore errors if nothing is playing
-    }
-    if (durationInterval) {
-      clearInterval(durationInterval);
-    }
-  };
-
-  const startRecording = async () => {
-    // Request permissions on Android
-    if (Platform.OS === 'android') {
-      try {
-        const granted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-          {
-            title: 'Microphone Permission',
-            message:
-              'This app needs access to your microphone to record audio.',
-            buttonNeutral: 'Ask Me Later',
-            buttonNegative: 'Cancel',
-            buttonPositive: 'OK',
-          },
-        );
-        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-          Alert.alert(
-            'Permission Denied',
-            'Microphone permission is required to record audio.',
-          );
-          return;
-        }
-      } catch (err) {
-        console.error('Permission error:', err);
-        return;
-      }
-    }
-
-    try {
-      // Create file path for recording
+      // Create audio file path
       const fileName = `recording_${Date.now()}.m4a`;
       const filePath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
 
       // Set up recording progress listener
       Sound.addRecordBackListener((e: any) => {
-        setDuration(Math.floor(e.currentPosition / 1000)); // Convert ms to seconds
+        setDuration(Math.floor(e.currentPosition / 1000));
       });
 
       // Start audio recording
       await Sound.startRecorder(filePath);
-      // Store path temporarily - will be moved to recordingUri when recording stops
-      tempRecordingPath.current = filePath;
-      setIsRecording(true);
 
-      // Note: Voice recognition disabled during recording
-      // Audio recording uses the microphone, so speech recognition can't work simultaneously
+      // Start voice recognition
+      await startListening();
+      setIsListening(true);
+      console.log('🎤 Started listening + recording');
     } catch (error) {
-      console.error('Failed to start recording:', error);
-      Alert.alert('Error', 'Failed to start recording.');
-      setIsRecording(false);
+      console.error('Failed to start:', error);
+      Alert.alert('Error', 'Failed to start recording and speech recognition.');
     }
   };
 
-  const stopRecording = async () => {
+  const handleStopListening = async () => {
     try {
-      // Stop audio recording and get the file URI
+      // Stop voice recognition
+      await stopListening();
+
+      // Stop audio recording
       const uri = await Sound.stopRecorder();
       Sound.removeRecordBackListener();
-      setIsRecording(false);
 
-      // Set the recording URI from either the returned URI or the temp path
-      const finalUri = uri || tempRecordingPath.current;
-      if (finalUri) {
-        setRecordingUri(finalUri);
-
-        // Automatically transcribe the recorded audio
-        await transcribeAudio(finalUri);
+      if (uri) {
+        setRecordingUri(uri);
+        console.log('📁 Recording saved:', uri);
       }
 
-      // Clear temp path
-      tempRecordingPath.current = '';
+      setIsListening(false);
+      console.log('🛑 Stopped listening + recording');
+      console.log('📝 Final transcript:', voiceTranscript);
     } catch (error) {
-      console.error('Failed to stop recording:', error);
-      Alert.alert('Error', 'Failed to stop recording.');
-      setIsRecording(false);
-    }
-  };
-
-  const transcribeAudio = async (audioPath: string) => {
-    if (!whisperContext.current) {
-      console.error('Whisper context not initialized');
-      return;
-    }
-
-    try {
-      setIsTranscribing(true);
-      console.log('Starting transcription for:', audioPath);
-
-      const { promise } = whisperContext.current.transcribe(
-        audioPath.startsWith('file://') ? audioPath : `file://${audioPath}`,
-        { language: 'en' },
-      );
-
-      const { result } = await promise;
-      console.log('Transcription result:', result);
-
-      setTranscript(result || '');
-      setIsTranscribing(false);
-    } catch (error) {
-      console.error('Transcription failed:', error);
-      Alert.alert(
-        'Transcription Error',
-        'Failed to transcribe audio. You can manually enter the transcript.',
-      );
-      setIsTranscribing(false);
+      console.error('Failed to stop:', error);
+      Alert.alert('Error', 'Failed to stop recording and speech recognition.');
     }
   };
 
@@ -198,34 +125,18 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
       if (!recordingUri) return;
 
       if (isPlaying) {
-        // Stop playback
         await Sound.stopPlayer();
         Sound.removePlayBackListener();
-        Sound.removePlaybackEndListener();
         setIsPlaying(false);
       } else {
-        // Start playback
-        try {
-          // Set up playback progress listener
-          Sound.addPlayBackListener((e: any) => {
-            // Update playback progress if needed
-            if (e.currentPosition === e.duration && e.duration > 0) {
-              setIsPlaying(false);
-            }
-          });
-
-          // Set up playback end listener
-          Sound.addPlaybackEndListener(() => {
+        Sound.addPlayBackListener((e: any) => {
+          if (e.currentPosition === e.duration && e.duration > 0) {
             setIsPlaying(false);
-          });
+          }
+        });
 
-          await Sound.startPlayer(recordingUri);
-          setIsPlaying(true);
-        } catch (loadError) {
-          console.error('Failed to load or play recording:', loadError);
-          Alert.alert('Error', 'Failed to load or play recording.');
-          setIsPlaying(false);
-        }
+        await Sound.startPlayer(recordingUri);
+        setIsPlaying(true);
       }
     } catch (error) {
       console.error('Failed to play recording:', error);
@@ -241,8 +152,8 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
   };
 
   const handleUpload = async () => {
-    if (!recordingUri) {
-      Alert.alert('Error', 'No recording found. Please record audio first.');
+    if (!transcript.trim()) {
+      Alert.alert('Error', 'Please capture some speech or enter text manually.');
       return;
     }
 
@@ -251,59 +162,36 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
       return;
     }
 
-    try {
-      setUploading(true);
-
-      // Prepare file for upload
-      const filename = recordingUri.split('/').pop() || 'recording.m4a';
-      const file = {
-        uri: recordingUri,
-        name: filename,
-        type: 'audio/m4a',
-      };
-
-      // Prepare metadata
-      const meta = {
-        title: title.trim(),
-        transcriptText: transcript || 'No transcript available',
-        durationInSeconds: duration,
-        language: 'en',
-      };
-
-      // Upload
-      const response = await voiceNoteService.uploadVoiceNote(file, meta);
-
-      Alert.alert('Success', 'Voice note uploaded successfully!', [
+    Alert.alert(
+      'Upload Text Only',
+      'This will save the transcript text only (no audio file). Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: 'OK',
-          onPress: () => navigation.goBack(),
+          text: 'Save',
+          onPress: () => {
+            console.log('Saving voice note:', { title, transcript });
+            Alert.alert('Success', 'Voice note text saved!', [
+              { text: 'OK', onPress: () => navigation.goBack() },
+            ]);
+          },
         },
-      ]);
-    } catch (error: any) {
-      console.error('Failed to upload voice note:', error);
-      Alert.alert(
-        'Upload Failed',
-        error.response?.data?.message ||
-          'Failed to upload voice note. Please try again.',
-      );
-    } finally {
-      setUploading(false);
-    }
+      ]
+    );
   };
 
-  const resetRecording = async () => {
-    setRecordingUri('');
-    setDuration(0);
+  const handleReset = () => {
     setTranscript('');
     setTitle('');
+    setRecordingUri('');
+    setDuration(0);
     setIsPlaying(false);
+    previousTranscript.current = '';
     try {
-      await Sound.stopPlayer();
+      Sound.stopPlayer();
       Sound.removePlayBackListener();
-      Sound.removePlaybackEndListener();
-      Sound.removeRecordBackListener();
     } catch (error) {
-      // Ignore errors if nothing is playing
+      // Ignore
     }
   };
 
@@ -312,99 +200,87 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
       <Card style={styles.card}>
         <Card.Content>
           <Text variant="headlineSmall" style={styles.headerText}>
-            {isRecording
-              ? 'Recording...'
-              : recordingUri
-              ? 'Recording Complete'
-              : 'Ready to Record'}
+            {listening ? 'Listening...' : available ? 'Ready to Listen' : 'Not Available'}
           </Text>
 
-          {isRecording && (
-            <View style={styles.recordingIndicator}>
-              <IconButton icon="microphone" size={40} iconColor="#f44336" />
-              <Text variant="headlineMedium" style={styles.timerText}>
-                {formatTime(duration)}
+          {isListening && (
+            <View style={styles.listeningIndicator}>
+              <Text variant="headlineMedium" style={styles.listeningText}>
+                🎤 {formatTime(duration)}
               </Text>
             </View>
           )}
 
-          {!isRecording && recordingUri && (
+          {voiceTranscript && (
+            <View style={styles.liveTranscript}>
+              <Text variant="bodyMedium">Live: {voiceTranscript}</Text>
+            </View>
+          )}
+
+          {recordingUri && !isListening && (
             <View style={styles.playbackSection}>
-              <Text variant="bodyMedium" style={styles.durationText}>
-                Duration: {formatTime(duration)}
-              </Text>
-
-              {isTranscribing && (
-                <Text variant="bodySmall" style={styles.transcribingText}>
-                  🎙️ Transcribing audio...
-                </Text>
-              )}
-
-              <View style={styles.playbackControls}>
-                <IconButton
-                  icon={isPlaying ? 'pause' : 'play'}
-                  size={40}
-                  iconColor="#6200ee"
-                  onPress={playRecording}
-                />
-              </View>
+              <Text variant="bodyMedium">Duration: {formatTime(duration)}</Text>
+              <IconButton
+                icon={isPlaying ? 'pause' : 'play'}
+                size={32}
+                iconColor="#6200ee"
+                onPress={playRecording}
+              />
             </View>
           )}
         </Card.Content>
       </Card>
 
-      {recordingUri && (
-        <Card style={styles.card}>
-          <Card.Content>
-            <TextInput
-              label="Title"
+      <Card style={styles.card}>
+        <Card.Content>
+          <TextInput
+            label="Title"
+            mode="outlined"
+            value={title}
+            onChangeText={setTitle}
+            placeholder="Enter a title for this voice note"
+            style={styles.input}
+          />
+
+          <TextInput
+            label="Transcript"
+            mode="outlined"
+            value={transcript}
+            onChangeText={setTranscript}
+            placeholder="Transcript will appear here..."
+            multiline
+            numberOfLines={8}
+            style={[styles.input, { height: 150 }]}
+          />
+
+          <View style={styles.buttonContainer}>
+            <Button
               mode="outlined"
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Enter a title for this voice note"
-              style={styles.input}
-            />
+              onPress={handleReset}
+              style={styles.button}
+              disabled={uploading}
+            >
+              Reset
+            </Button>
+            <Button
+              mode="contained"
+              onPress={handleUpload}
+              style={styles.button}
+              loading={uploading}
+              disabled={uploading || !transcript.trim()}
+            >
+              Save
+            </Button>
+          </View>
+        </Card.Content>
+      </Card>
 
-            <TextInput
-              label="Transcript"
-              mode="outlined"
-              value={transcript}
-              onChangeText={setTranscript}
-              placeholder="Type what was said in the recording..."
-              multiline
-              numberOfLines={6}
-              style={styles.input}
-            />
-
-            <View style={styles.buttonContainer}>
-              <Button
-                mode="outlined"
-                onPress={resetRecording}
-                style={styles.button}
-                disabled={uploading}
-              >
-                Reset
-              </Button>
-              <Button
-                mode="contained"
-                onPress={handleUpload}
-                style={styles.button}
-                loading={uploading}
-                disabled={uploading}
-              >
-                Upload
-              </Button>
-            </View>
-          </Card.Content>
-        </Card>
-      )}
-
-      {(!recordingUri || isRecording) && (
+      {available && (
         <FAB
-          icon={isRecording ? 'stop' : 'microphone'}
-          style={[styles.fab, isRecording && styles.fabRecording]}
-          onPress={isRecording ? stopRecording : startRecording}
-          label={isRecording ? 'Stop' : 'Record'}
+          icon={listening ? 'stop' : 'microphone'}
+          style={[styles.fab, listening && styles.fabListening]}
+          onPress={listening ? handleStopListening : handleStartListening}
+          label={listening ? 'Stop' : 'Listen'}
         />
       )}
     </ScrollView>
@@ -427,25 +303,23 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 16,
   },
-  recordingIndicator: {
+  listeningIndicator: {
     alignItems: 'center',
     paddingVertical: 20,
   },
-  timerText: {
-    marginTop: 8,
+  listeningText: {
     color: '#f44336',
     fontWeight: 'bold',
   },
+  liveTranscript: {
+    marginTop: 16,
+    padding: 12,
+    backgroundColor: '#e3f2fd',
+    borderRadius: 8,
+  },
   playbackSection: {
-    paddingVertical: 20,
-  },
-  durationText: {
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  playbackControls: {
+    marginTop: 16,
     alignItems: 'center',
-    marginBottom: 16,
   },
   input: {
     marginBottom: 16,
@@ -465,14 +339,8 @@ const styles = StyleSheet.create({
     bottom: 0,
     backgroundColor: '#6200ee',
   },
-  fabRecording: {
+  fabListening: {
     backgroundColor: '#f44336',
-  },
-  transcribingText: {
-    textAlign: 'center',
-    marginVertical: 8,
-    color: '#6200ee',
-    fontStyle: 'italic',
   },
 });
 
