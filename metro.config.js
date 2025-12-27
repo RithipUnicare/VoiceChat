@@ -1,6 +1,4 @@
 const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
-const defaultAssetExts =
-  require('metro-config/src/defaults/defaults').assetExts;
 
 /**
  * Metro configuration
@@ -8,13 +6,11 @@ const defaultAssetExts =
  *
  * @type {import('@react-native/metro-config').MetroConfig}
  */
-const config = {
-  resolver: {
-    assetExts: [
-      ...defaultAssetExts,
-      'bin', // whisper.rn: ggml model binary
-    ],
-  },
-};
+const config = {};
 
-module.exports = mergeConfig(getDefaultConfig(__dirname), config);
+const defaultConfig = getDefaultConfig(__dirname);
+
+// Add .bin extension for whisper.rn model files
+defaultConfig.resolver.assetExts.push('bin');
+
+module.exports = mergeConfig(defaultConfig, config);
