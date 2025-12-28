@@ -1,22 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import {
-  View,
-  StyleSheet,
-  ScrollView,
-  Alert,
-} from 'react-native';
-import {
-  Text,
-  FAB,
-  TextInput,
-  Button,
-  Card,
-  IconButton,
-} from 'react-native-paper';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, StyleSheet, ScrollView, Alert } from 'react-native';
+import { Text, FAB, TextInput, Button, Card } from 'react-native-paper';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useVoice, VoiceMode } from 'react-native-voicekit';
-import Sound from 'react-native-nitro-sound';
-import RNFS from 'react-native-fs';
 import { RootStackParamList } from '../../types/types';
 
 type CreateVoiceNoteScreenProps = {
@@ -29,10 +15,7 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
   const [transcript, setTranscript] = useState('');
   const [title, setTitle] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [recordingUri, setRecordingUri] = useState('');
-  const [duration, setDuration] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+
   // Initialize voice recognition hook
   const {
     available,
@@ -46,19 +29,42 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
     enablePartialResults: true,
   });
 
-  // Track previous transcript to detect changes
-  const previousTranscript = React.useRef('');
+  // Use a Set to store unique complete sentences and prevent duplication
+  const sentenceSet = useRef<Set<string>>(new Set());
+  // Accumulated text buffer - persists across voice resets
+  const accumulatedText = useRef('');
+  // Track the last voice transcript to detect resets
+  const lastVoiceTranscript = useRef('');
 
-  // Sync voice transcript to local state - APPEND instead of replace
+  // Sync voice transcript to local state - accumulate all text
   useEffect(() => {
-    if (voiceTranscript && voiceTranscript !== previousTranscript.current) {
-      // Append new text to existing transcript
-      setTranscript(prev => {
-        const newText = prev ? `${prev} ${voiceTranscript}` : voiceTranscript;
-        return newText;
-      });
-      previousTranscript.current = voiceTranscript;
-      console.log('✅ Voice transcript appended:', voiceTranscript);
+    if (voiceTranscript) {
+      console.log('📝 Voice input:', voiceTranscript);
+
+      // Check if this is a continuation or a new segment (reset happened)
+      // If voiceTranscript is shorter than before or completely different, it's a new segment
+      const isNewSegment =
+        !voiceTranscript.startsWith(
+          lastVoiceTranscript.current.substring(0, 10),
+        ) &&
+        lastVoiceTranscript.current.length > 0 &&
+        voiceTranscript.length < lastVoiceTranscript.current.length;
+
+      if (isNewSegment) {
+        // Voice library reset - save the previous text and start new
+        console.log('🔄 Voice reset detected, preserving previous text');
+        accumulatedText.current =
+          accumulatedText.current + ' ' + lastVoiceTranscript.current;
+      }
+
+      lastVoiceTranscript.current = voiceTranscript;
+
+      // Combine accumulated text with current voice transcript
+      const fullText = (accumulatedText.current + ' ' + voiceTranscript).trim();
+
+      // Simply show all accumulated text
+      setTranscript(fullText);
+      console.log('📊 Full text length:', fullText.length);
     }
   }, [voiceTranscript]);
 
@@ -75,85 +81,31 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
 
   const handleStartListening = async () => {
     try {
-      // Create audio file path
-      const fileName = `recording_${Date.now()}.m4a`;
-      const filePath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
-
-      // Set up recording progress listener
-      Sound.addRecordBackListener((e: any) => {
-        setDuration(Math.floor(e.currentPosition / 1000));
-      });
-
-      // Start audio recording
-      await Sound.startRecorder(filePath);
-
-      // Start voice recognition
       await startListening();
-      setIsListening(true);
-      console.log('🎤 Started listening + recording');
+      console.log('🎤 Started listening');
     } catch (error) {
       console.error('Failed to start:', error);
-      Alert.alert('Error', 'Failed to start recording and speech recognition.');
+      Alert.alert('Error', 'Failed to start speech recognition.');
     }
   };
 
   const handleStopListening = async () => {
     try {
-      // Stop voice recognition
       await stopListening();
-
-      // Stop audio recording
-      const uri = await Sound.stopRecorder();
-      Sound.removeRecordBackListener();
-
-      if (uri) {
-        setRecordingUri(uri);
-        console.log('📁 Recording saved:', uri);
-      }
-
-      setIsListening(false);
-      console.log('🛑 Stopped listening + recording');
-      console.log('📝 Final transcript:', voiceTranscript);
+      console.log('🛑 Stopped listening');
+      console.log('📝 Final unique sentences:', sentenceSet.current.size);
     } catch (error) {
       console.error('Failed to stop:', error);
-      Alert.alert('Error', 'Failed to stop recording and speech recognition.');
+      Alert.alert('Error', 'Failed to stop speech recognition.');
     }
-  };
-
-  const playRecording = async () => {
-    try {
-      if (!recordingUri) return;
-
-      if (isPlaying) {
-        await Sound.stopPlayer();
-        Sound.removePlayBackListener();
-        setIsPlaying(false);
-      } else {
-        Sound.addPlayBackListener((e: any) => {
-          if (e.currentPosition === e.duration && e.duration > 0) {
-            setIsPlaying(false);
-          }
-        });
-
-        await Sound.startPlayer(recordingUri);
-        setIsPlaying(true);
-      }
-    } catch (error) {
-      console.error('Failed to play recording:', error);
-      Alert.alert('Error', 'Failed to play recording.');
-      setIsPlaying(false);
-    }
-  };
-
-  const formatTime = (seconds: number) => {
-    const minutes = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${minutes}:${secs.toString().padStart(2, '0')}`;
   };
 
   const handleUpload = async () => {
     if (!transcript.trim()) {
-      Alert.alert('Error', 'Please capture some speech or enter text manually.');
+      Alert.alert(
+        'Error',
+        'Please capture some speech or enter text manually.',
+      );
       return;
     }
 
@@ -163,8 +115,8 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
     }
 
     Alert.alert(
-      'Upload Text Only',
-      'This will save the transcript text only (no audio file). Continue?',
+      'Save Transcript',
+      'This will save the transcript text. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -176,23 +128,16 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
             ]);
           },
         },
-      ]
+      ],
     );
   };
 
   const handleReset = () => {
     setTranscript('');
     setTitle('');
-    setRecordingUri('');
-    setDuration(0);
-    setIsPlaying(false);
-    previousTranscript.current = '';
-    try {
-      Sound.stopPlayer();
-      Sound.removePlayBackListener();
-    } catch (error) {
-      // Ignore
-    }
+    sentenceSet.current.clear();
+    accumulatedText.current = '';
+    lastVoiceTranscript.current = '';
   };
 
   return (
@@ -200,13 +145,17 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
       <Card style={styles.card}>
         <Card.Content>
           <Text variant="headlineSmall" style={styles.headerText}>
-            {listening ? 'Listening...' : available ? 'Ready to Listen' : 'Not Available'}
+            {listening
+              ? 'Listening...'
+              : available
+              ? 'Ready to Listen'
+              : 'Not Available'}
           </Text>
 
-          {isListening && (
+          {listening && (
             <View style={styles.listeningIndicator}>
               <Text variant="headlineMedium" style={styles.listeningText}>
-                🎤 {formatTime(duration)}
+                🎤 Listening
               </Text>
             </View>
           )}
@@ -217,17 +166,11 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
             </View>
           )}
 
-          {recordingUri && !isListening && (
-            <View style={styles.playbackSection}>
-              <Text variant="bodyMedium">Duration: {formatTime(duration)}</Text>
-              <IconButton
-                icon={isPlaying ? 'pause' : 'play'}
-                size={32}
-                iconColor="#6200ee"
-                onPress={playRecording}
-              />
-            </View>
-          )}
+          <View style={styles.statsSection}>
+            <Text variant="bodySmall" style={styles.statsText}>
+              Unique sentences captured: {sentenceSet.current.size}
+            </Text>
+          </View>
         </Card.Content>
       </Card>
 
@@ -317,9 +260,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#e3f2fd',
     borderRadius: 8,
   },
-  playbackSection: {
+  statsSection: {
     marginTop: 16,
     alignItems: 'center',
+  },
+  statsText: {
+    color: '#666',
+    fontStyle: 'italic',
   },
   input: {
     marginBottom: 16,
