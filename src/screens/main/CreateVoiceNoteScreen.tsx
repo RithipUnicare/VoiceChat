@@ -4,6 +4,7 @@ import { Text, FAB, TextInput, Button, Card } from 'react-native-paper';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useVoice, VoiceMode } from 'react-native-voicekit';
 import { RootStackParamList } from '../../types/types';
+import { voiceNoteService } from '../../services/voiceNoteService';
 
 type CreateVoiceNoteScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'CreateVoiceNote'>;
@@ -100,7 +101,7 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
     }
   };
 
-  const handleUpload = async () => {
+  const handleSubmit = async () => {
     if (!transcript.trim()) {
       Alert.alert(
         'Error',
@@ -114,22 +115,44 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
       return;
     }
 
-    Alert.alert(
-      'Save Transcript',
-      'This will save the transcript text. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Save',
-          onPress: () => {
-            console.log('Saving voice note:', { title, transcript });
-            Alert.alert('Success', 'Voice note text saved!', [
-              { text: 'OK', onPress: () => navigation.goBack() },
-            ]);
-          },
-        },
-      ],
-    );
+    try {
+      setUploading(true);
+
+      // For Phase 1: Use demo audio file from assets
+      const audioFile = {
+        uri: 'asset:/assets/demoaudio.m4a',
+        type: 'audio/m4a',
+        name: 'demoaudio.m4a',
+      };
+
+      // Create metadata object
+      const metadata = {
+        title: title.trim(),
+        transcript: transcript.trim(),
+      };
+
+      console.log('Uploading voice note:', metadata);
+
+      // Call backend API
+      const response = await voiceNoteService.uploadVoiceNote(
+        audioFile,
+        metadata,
+      );
+
+      console.log('Upload successful:', response);
+
+      Alert.alert('Success', 'Voice note uploaded successfully!', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch (error) {
+      console.error('Upload failed:', error);
+      Alert.alert(
+        'Error',
+        'Failed to upload voice note. Please try again.',
+      );
+    } finally {
+      setUploading(false);
+    }
   };
 
   const handleReset = () => {
@@ -148,8 +171,8 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
             {listening
               ? 'Listening...'
               : available
-              ? 'Ready to Listen'
-              : 'Not Available'}
+                ? 'Ready to Listen'
+                : 'Not Available'}
           </Text>
 
           {listening && (
@@ -207,12 +230,12 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
             </Button>
             <Button
               mode="contained"
-              onPress={handleUpload}
+              onPress={handleSubmit}
               style={styles.button}
               loading={uploading}
               disabled={uploading || !transcript.trim()}
             >
-              Save
+              Submit
             </Button>
           </View>
         </Card.Content>
