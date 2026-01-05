@@ -25,7 +25,7 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
 
     useEffect(() => {
-        loadVoiceNotes();
+        navigation.addListener('focus', () => loadVoiceNotes());
 
         // Add header buttons
         navigation.setOptions({
@@ -38,7 +38,7 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
                 />
             ),
         });
-    }, []);
+    }, [navigation]);
 
     const loadVoiceNotes = async () => {
         try {

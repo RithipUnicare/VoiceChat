@@ -97,7 +97,7 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               >
                 <List.Icon icon="pencil" color="#6200ee" />
               </TouchableRipple>
-            )}{' '}
+            )}
           </View>
 
           {isEditing ? (

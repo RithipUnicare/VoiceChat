@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, ScrollView, Alert } from 'react-native';
+import { View, StyleSheet, ScrollView, Alert, Image } from 'react-native';
 import { Text, FAB, TextInput, Button, Card } from 'react-native-paper';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useVoice, VoiceMode } from 'react-native-voicekit';
@@ -17,7 +17,6 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
   const [title, setTitle] = useState('');
   const [uploading, setUploading] = useState(false);
 
-  // Initialize voice recognition hook
   const {
     available,
     listening,
@@ -30,20 +29,12 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
     enablePartialResults: true,
   });
 
-  // Use a Set to store unique complete sentences and prevent duplication
   const sentenceSet = useRef<Set<string>>(new Set());
-  // Accumulated text buffer - persists across voice resets
   const accumulatedText = useRef('');
-  // Track the last voice transcript to detect resets
   const lastVoiceTranscript = useRef('');
 
-  // Sync voice transcript to local state - accumulate all text
   useEffect(() => {
     if (voiceTranscript) {
-      console.log('📝 Voice input:', voiceTranscript);
-
-      // Check if this is a continuation or a new segment (reset happened)
-      // If voiceTranscript is shorter than before or completely different, it's a new segment
       const isNewSegment =
         !voiceTranscript.startsWith(
           lastVoiceTranscript.current.substring(0, 10),
@@ -52,26 +43,18 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
         voiceTranscript.length < lastVoiceTranscript.current.length;
 
       if (isNewSegment) {
-        // Voice library reset - save the previous text and start new
-        console.log('🔄 Voice reset detected, preserving previous text');
         accumulatedText.current =
           accumulatedText.current + ' ' + lastVoiceTranscript.current;
       }
 
       lastVoiceTranscript.current = voiceTranscript;
 
-      // Combine accumulated text with current voice transcript
       const fullText = (accumulatedText.current + ' ' + voiceTranscript).trim();
-
-      // Simply show all accumulated text
       setTranscript(fullText);
-      console.log('📊 Full text length:', fullText.length);
     }
   }, [voiceTranscript]);
 
-  // Check voice availability
   useEffect(() => {
-    console.log('🔊 Voice recognition available:', available);
     if (!available) {
       Alert.alert(
         'Speech Recognition Unavailable',
@@ -83,9 +66,7 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
   const handleStartListening = async () => {
     try {
       await startListening();
-      console.log('🎤 Started listening');
     } catch (error) {
-      console.error('Failed to start:', error);
       Alert.alert('Error', 'Failed to start speech recognition.');
     }
   };
@@ -93,10 +74,7 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
   const handleStopListening = async () => {
     try {
       await stopListening();
-      console.log('🛑 Stopped listening');
-      console.log('📝 Final unique sentences:', sentenceSet.current.size);
     } catch (error) {
-      console.error('Failed to stop:', error);
       Alert.alert('Error', 'Failed to stop speech recognition.');
     }
   };
@@ -118,37 +96,38 @@ const CreateVoiceNoteScreen: React.FC<CreateVoiceNoteScreenProps> = ({
     try {
       setUploading(true);
 
-      // For Phase 1: Use demo audio file from assets
+      const assetSource = require('../../../assets/demoaudio.m4a');
+      const asset = Image.resolveAssetSource(assetSource);
+
+      if (!asset) {
+        throw new Error('Failed to resolve demo audio asset source');
+      }
+
       const audioFile = {
-        uri: 'asset:/assets/demoaudio.m4a',
+        uri: asset.uri,
         type: 'audio/m4a',
         name: 'demoaudio.m4a',
       };
 
-      // Create metadata object
       const metadata = {
         title: title.trim(),
-        transcript: transcript.trim(),
+        transcriptText: transcript.trim(),
+        durationInSeconds: 120,
+        language: 'en'
       };
 
-      console.log('Uploading voice note:', metadata);
-
-      // Call backend API
-      const response = await voiceNoteService.uploadVoiceNote(
+      await voiceNoteService.uploadVoiceNote(
         audioFile,
         metadata,
       );
 
-      console.log('Upload successful:', response);
-
       Alert.alert('Success', 'Voice note uploaded successfully!', [
         { text: 'OK', onPress: () => navigation.goBack() },
       ]);
-    } catch (error) {
-      console.error('Upload failed:', error);
+    } catch (error: any) {
       Alert.alert(
         'Error',
-        'Failed to upload voice note. Please try again.',
+        `Failed to upload voice note: ${error.message || 'Please try again.'}`,
       );
     } finally {
       setUploading(false);
